@@ -1,4 +1,4 @@
-this is a beginner-friendly set of instructions with various setup options, step-by-step guidance, and links to everything needed for getting started. This guide will also explain how users can personalize and improve the script with ChatGPT.
+This  is a beginner-friendly set of instructions with various setup options, step-by-step guidance, and links to everything needed for getting started. This guide will also explain how users can personalize and improve the script with ChatGPT.
 
 AlgoTraderX: Adaptive Algorithmic Trading Bot
 
