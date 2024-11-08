@@ -1,0 +1,186 @@
+import requests
+import pandas as pd
+import talib
+import time
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+import openai
+from twilio.rest import Client
+import logging
+
+# Set up logging for better debugging and tracking
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Constants
+SYMBOL = "AAPL"
+SMA_PERIOD = 5
+RSI_PERIOD = 14
+TRADE_HISTORY_FILE = "OptionsTradeHistory.json"
+RETRY_DELAY = 60  # Delay in seconds for retrying API calls
+MAX_ORDER_RETRIES = 5
+HIGH_VOL_PERCENT = 0.02  # 2% of bankroll for high-volatility trades
+HIGH_VOL_STOP_LOSS = 0.03  # 3% stop-loss for high-volatility trades
+HIGH_VOL_PROFIT_TARGET = 0.1  # 10% profit target for high-volatility trades
+
+# API keys and credentials
+ALPACA_API_KEY = ''
+ALPACA_SECRET_KEY = ''
+POLYGON_API_KEY = ''
+CHATGPT_API_KEY = 'sk-pr'
+TWILIO_ACCOUNT_SID = ''
+TWILIO_AUTH_TOKEN = ''
+TWILIO_PHONE_NUMBER = '+'
+USER_PHONE_NUMBER = '+'
+
+# Configure API base URLs and headers
+ALPACA_BASE_URL = 'https://api.alpaca.markets'
+ALPACA_HEADERS = {
+    'APCA-API-KEY-ID': ALPACA_API_KEY,
+    'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY
+}
+openai.api_key = CHATGPT_API_KEY
+
+# Initialize Twilio client and check for credential issues
+try:
+    twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+except Exception as e:
+    logger.error("Twilio Client could not be initialized. Check credentials.")
+    raise e
+
+def send_sms(message: str) -> None:
+    """Send SMS using Twilio."""
+    try:
+        twilio_client.messages.create(
+            body=message,
+            from_=TWILIO_PHONE_NUMBER,
+            to=USER_PHONE_NUMBER
+        )
+        logger.info("SMS sent successfully.")
+    except Exception as e:
+        logger.error(f"Error sending SMS: {e}")
+
+def send_chatgpt_message(message: str) -> None:
+    """Send message to ChatGPT and log response."""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": message}]
+        )
+        chat_message = response['choices'][0]['message']['content']
+        logger.info(f"ChatGPT response: {chat_message}")
+    except Exception as e:
+        logger.error(f"Error sending message to ChatGPT: {e}")
+
+def check_permissions() -> Optional[Dict[str, Any]]:
+    """Check Alpaca account permissions."""
+    try:
+        url = f"{ALPACA_BASE_URL}/v2/account"
+        response = requests.get(url, headers=ALPACA_HEADERS)
+        response.raise_for_status()
+        account_data = response.json()
+        send_chatgpt_message(f"Alpaca Account Data: {account_data}")
+        return account_data
+    except requests.RequestException as e:
+        logger.error(f"Error accessing Alpaca account: {e}")
+        return None
+
+def get_market_status() -> bool:
+    """Check if the market is open."""
+    try:
+        url = f"{ALPACA_BASE_URL}/v2/clock"
+        response = requests.get(url, headers=ALPACA_HEADERS)
+        response.raise_for_status()
+        clock_data = response.json()
+        send_chatgpt_message(f"Alpaca Market Clock: {clock_data}")
+        return clock_data["is_open"]
+    except requests.RequestException as e:
+        logger.error(f"Error accessing Alpaca market clock: {e}")
+        return False
+
+def fetch_historical_data(symbol: str) -> Optional[pd.DataFrame]:
+    """Fetch historical data from Polygon."""
+    try:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        
+        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}"
+        params = {
+            "apiKey": POLYGON_API_KEY,
+            "limit": 100,
+            "adjusted": "true",
+            "sort": "desc"
+        }
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json().get('results', [])
+        
+        if not data:
+            logger.warning("No data returned from Polygon.")
+            return None
+        
+        df = pd.DataFrame(data)
+        df['time'] = pd.to_datetime(df['t'], unit='ms')
+        df.set_index('time', inplace=True)
+        df['close'] = df['c']
+        return df
+    except requests.RequestException as e:
+        logger.error(f"Error fetching historical data: {e}")
+        return None
+
+def execute_high_vol_trade(symbol: str, bankroll: float) -> None:
+    """Execute a small high-volatility trade during downtime."""
+    trade_amount = bankroll * HIGH_VOL_PERCENT
+    try:
+        order_data = {
+            "symbol": symbol,
+            "qty": int(trade_amount),
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day"
+        }
+        logger.info(f"Placing high-volatility trade: {order_data}")
+        response = requests.post(f"{ALPACA_BASE_URL}/v2/orders", headers=ALPACA_HEADERS, json=order_data)
+        response.raise_for_status()
+        send_chatgpt_message(f"High-volatility trade executed: {response.json()}")
+    except requests.RequestException as e:
+        logger.error(f"Error executing high-volatility trade: {e}")
+
+def main_trading_loop():
+    """Main loop for monitoring and executing trades."""
+    logger.info("Starting Trading Bot")
+    account_data = check_permissions()
+    if not account_data:
+        logger.error("Account access failed or is restricted. Exiting.")
+        return
+
+    while True:
+        if not get_market_status():
+            logger.info("Market is closed. Waiting for market to open...")
+            time.sleep(RETRY_DELAY)
+            continue
+
+        logger.info("Market is open. Fetching historical data.")
+        df = fetch_historical_data(SYMBOL)
+        if df is not None:
+            sma = talib.SMA(df['close'], SMA_PERIOD)
+            rsi = talib.RSI(df['close'], RSI_PERIOD)
+            latest_sma = sma.iloc[-1]
+            latest_rsi = rsi.iloc[-1]
+            logger.info(f"Latest SMA: {latest_sma}, Latest RSI: {latest_rsi}")
+
+            # Standard trade conditions
+            if latest_rsi < 30 and latest_sma < df['close'].iloc[-1]:       
+                # Your existing trade execution logic here
+                # e.g., execute_trade("buy", SYMBOL)
+                pass  # Replace with actual trading logic
+            else:
+                # Execute a small high-volatility trade if conditions are not met
+                execute_high_vol_trade(SYMBOL, float(account_data.get("equity", 0)))
+        else:
+            logger.warning("No historical data available.")
+        
+        time.sleep(RETRY_DELAY)
+
+if __name__ == "__main__":
+    main_trading_loop()
