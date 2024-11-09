@@ -1,4 +1,4 @@
-
+if you need assistance with anything I suggest asking chatgpt
 AlgoTraderX: Adaptive Algorithmic Trading Bot
 
 AlgoTraderX is a Python-based algorithmic trading bot designed for the stock and options market. This bot leverages multiple APIs to execute trades based on technical indicators, includes adaptive risk management, and provides real-time notifications.
