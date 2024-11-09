@@ -1,40 +1,47 @@
 import requests
 import pandas as pd
 import talib
+import numpy as np
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import openai
-import json
 from twilio.rest import Client
 import logging
-from ratelimit import limits, sleep_and_retry
+import json
+from hmmlearn import hmm
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.model_selection import train_test_split
+from filterpy.kalman import KalmanFilter
+from threading import Thread, Event
 
-# Set up logging for better debugging and tracking
+# Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Constants
-SYMBOL = "AAPL"
+SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN"]
 SMA_PERIOD = 5
 RSI_PERIOD = 14
 TRADE_HISTORY_FILE = "OptionsTradeHistory.json"
-RETRY_DELAY = 60  # Delay in seconds for retrying API calls
-MAX_RETRIES = 3
+P_AND_L_FILE = "TradePnL.json"
+INITIAL_RETRY_DELAY = 5
 MAX_ORDER_RETRIES = 5
-HIGH_VOL_PERCENT = 0.02  # 2% of bankroll for high-volatility trades
-HIGH_VOL_STOP_LOSS = 0.03  # 3% stop-loss for high-volatility trades
-HIGH_VOL_PROFIT_TARGET = 0.1  # 10% profit target for high-volatility trades
+HIGH_VOL_PERCENT = 0.02
+DRAWDOWN_LIMIT = 0.1
+VOLATILITY_THRESHOLD = 2
+COOLDOWN_PERIOD = 300
+SENTIMENT_THRESHOLD = 0.1
 
 # API keys and credentials
-ALPACA_API_KEY = 'your_alpaca_api_key'
-ALPACA_SECRET_KEY = 'your_alpaca_secret_key'
-POLYGON_API_KEY = 'your_polygon_api_key'
-CHATGPT_API_KEY = 'your_chatgpt_api_key'
-TWILIO_ACCOUNT_SID = 'your_twilio_sid'
-TWILIO_AUTH_TOKEN = 'your_twilio_auth_token'
-TWILIO_PHONE_NUMBER = 'your_twilio_phone_number'
-USER_PHONE_NUMBER = 'your_phone_number'
+ALPACA_API_KEY = 'xxxxxxxx'
+ALPACA_SECRET_KEY = 'xxxxxxxxxx'
+POLYGON_API_KEY = 'xxxxxxxxxxxx'
+CHATGPT_API_KEY = 'xsxxxxxxxxxxx'
+TWILIO_ACCOUNT_SID = 'xxxxxxxxxx'
+TWILIO_AUTH_TOKEN = 'xxxxxxxxxxx'
+TWILIO_PHONE_NUMBER = 'xxxxxxxxxxx'
+USER_PHONE_NUMBER = 'xxxxxxx'
 
 # Configure API base URLs and headers
 ALPACA_BASE_URL = 'https://api.alpaca.markets'
@@ -44,13 +51,24 @@ ALPACA_HEADERS = {
 }
 openai.api_key = CHATGPT_API_KEY
 
-# Initialize Twilio client and check for credential issues
+# Initialize Twilio client
 try:
     twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 except Exception as e:
     logger.error("Twilio Client could not be initialized. Check credentials.")
     raise e
 
+# Initialize machine learning models
+random_forest_model = RandomForestClassifier(n_estimators=100, random_state=42)
+gradient_boosting_model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, random_state=42)
+
+# Track cumulative losses and portfolio of open trades
+cumulative_loss = 0.0
+portfolio = {}
+trade_attempts = 0
+market_open_logged = False
+
+# Utility functions
 def send_sms(message: str) -> None:
     """Send SMS using Twilio."""
     try:
@@ -75,81 +93,202 @@ def send_chatgpt_message(message: str) -> None:
     except Exception as e:
         logger.error(f"Error sending message to ChatGPT: {e}")
 
-def check_permissions() -> Optional[Dict[str, Any]]:
-    """Check Alpaca account permissions."""
+def save_trade_history(trade_data: Dict[str, Any]) -> None:
+    """Save trade outcome to a JSON file."""
     try:
-        url = f"{ALPACA_BASE_URL}/v2/account"
-        response = requests.get(url, headers=ALPACA_HEADERS)
-        response.raise_for_status()
-        account_data = response.json()
-        send_chatgpt_message(f"Alpaca Account Data: {account_data}")
-        return account_data
-    except requests.RequestException as e:
-        logger.error(f"Error accessing Alpaca account: {e}")
-        return None
+        with open(TRADE_HISTORY_FILE, "a") as f:
+            json.dump(trade_data, f)
+            f.write("\n")
+        logger.info("Trade history updated.")
+    except Exception as e:
+        logger.error(f"Error saving trade history: {e}")
+
+def save_pnl(trade_pnl: Dict[str, Any]) -> None:
+    """Save profit and loss data to a JSON file."""
+    try:
+        with open(P_AND_L_FILE, "a") as f:
+            json.dump(trade_pnl, f)
+            f.write("\n")
+        logger.info("P&L updated.")
+    except Exception as e:
+        logger.error(f"Error saving P&L: {e}")
+
+def adaptive_position_size(bankroll: float, atr: float) -> float:
+    """Calculate position size based on ATR and bankroll."""
+    risk_per_trade = HIGH_VOL_PERCENT * bankroll
+    return min(risk_per_trade / atr, bankroll * 0.05)
+
+def check_permissions() -> Optional[Dict[str, Any]]:
+    """Check Alpaca account permissions with retry and exponential backoff."""
+    delay = INITIAL_RETRY_DELAY
+    for _ in range(MAX_ORDER_RETRIES):
+        try:
+            url = f"{ALPACA_BASE_URL}/v2/account"
+            response = requests.get(url, headers=ALPACA_HEADERS)
+            response.raise_for_status()
+            account_data = response.json()
+            return account_data
+        except requests.RequestException as e:
+            logger.error(f"Error accessing Alpaca account: {e}. Retrying in {delay} seconds.")
+            time.sleep(delay)
+            delay *= 2
+    logger.error("Max retries reached. Failed to check Alpaca account permissions.")
+    return None
 
 def get_market_status() -> bool:
-    """Check if the market is open."""
+    """Check if the market is open. Only log once when market is closed."""
+    global market_open_logged
     try:
         url = f"{ALPACA_BASE_URL}/v2/clock"
         response = requests.get(url, headers=ALPACA_HEADERS)
         response.raise_for_status()
         clock_data = response.json()
-        send_chatgpt_message(f"Alpaca Market Clock: {clock_data}")
-        return clock_data["is_open"]
+        market_status = clock_data["is_open"]
+
+        if market_status:
+            market_open_logged = False  # Reset log flag if market opens
+        elif not market_open_logged:
+            logger.info("Market is closed. Waiting for market to open...")
+            market_open_logged = True
+
+        return market_status
     except requests.RequestException as e:
         logger.error(f"Error accessing Alpaca market clock: {e}")
         return False
 
 def fetch_historical_data(symbol: str) -> Optional[pd.DataFrame]:
-    """Fetch historical data from Polygon."""
-    try:
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-        
-        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}"
-        params = {
-            "apiKey": POLYGON_API_KEY,
-            "limit": 100,
-            "adjusted": "true",
-            "sort": "desc"
-        }
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json().get('results', [])
-        
-        if not data:
-            logger.warning("No data returned from Polygon.")
-            return None
-        
-        df = pd.DataFrame(data)
-        df['time'] = pd.to_datetime(df['t'], unit='ms')
-        df.set_index('time', inplace=True)
-        df['close'] = df['c']
-        return df
-    except requests.RequestException as e:
-        logger.error(f"Error fetching historical data: {e}")
-        return None
+    """Fetch historical data from Polygon with retry and exponential backoff."""
+    delay = INITIAL_RETRY_DELAY
+    for _ in range(MAX_ORDER_RETRIES):
+        try:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}"
+            params = {"apiKey": POLYGON_API_KEY, "limit": 100, "adjusted": "true", "sort": "desc"}
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json().get('results', [])
+            if not data:
+                logger.warning("No data returned from Polygon.")
+                return None
+            df = pd.DataFrame(data)
+            df['time'] = pd.to_datetime(df['t'], unit='ms')
+            df.set_index('time', inplace=True)
+            df['close'] = df['c']
+            df['high'] = df['h']
+            df['low'] = df['l']
+            df['open'] = df['o']
+            return df
+        except requests.RequestException as e:
+            logger.error(f"Error fetching historical data: {e}. Retrying in {delay} seconds.")
+            time.sleep(delay)
+            delay *= 2
+    logger.error("Max retries reached. Failed to fetch historical data.")
+    return None
 
-def execute_high_vol_trade(symbol: str, bankroll: float) -> None:
-    """Execute a small high-volatility trade during downtime."""
-    trade_amount = bankroll * HIGH_VOL_PERCENT
+def kalman_filter_smooth(series: pd.Series) -> pd.Series:
+    """Apply Kalman filter to smooth price series."""
+    kf = KalmanFilter(dim_x=2, dim_z=1)
+    kf.x = np.array([[series.values[0]], [0]])
+    kf.F = np.array([[1, 1], [0, 1]])
+    kf.H = np.array([[1, 0]])
+    kf.P *= 1000
+    kf.R = 5
+    smoothed_values = []
+    for value in series:
+        kf.predict()
+        kf.update([value])
+        smoothed_values.append(kf.x[0][0])
+    return pd.Series(smoothed_values, index=series.index)
+
+def calculate_indicators(df: pd.DataFrame):
+    """Calculate indicators for trading and analysis."""
+    df['SMA'] = talib.SMA(df['close'], SMA_PERIOD)
+    df['RSI'] = talib.RSI(df['close'], RSI_PERIOD)
+    df['ATR'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+    df['Returns'] = df['close'].pct_change()
+    df['Smoothed_Close'] = kalman_filter_smooth(df['close'])
+    return df
+
+def detect_market_regime(df: pd.DataFrame) -> str:
+    """Determine market regime using HMM and machine learning models."""
     try:
-        order_data = {
-            "symbol": symbol,
-            "qty": int(trade_amount),
-            "side": "buy",
-            "type": "market",
-            "time_in_force": "day",
-            "stop_loss": HIGH_VOL_STOP_LOSS,
-            "take_profit": HIGH_VOL_PROFIT_TARGET
-        }
-        logger.info(f"Placing high-volatility trade: {order_data}")
-        response = requests.post(f"{ALPACA_BASE_URL}/v2/orders", headers=ALPACA_HEADERS, json=order_data)
-        response.raise_for_status()
-        send_chatgpt_message(f"High-volatility trade executed: {response.json()}")
-    except requests.RequestException as e:
-        logger.error(f"Error executing high-volatility trade: {e}")
+        model = hmm.GaussianHMM(n_components=2, covariance_type="diag", n_iter=100)
+        df['Returns'] = df['Returns'].fillna(0)
+        train_data, _ = train_test_split(df['Returns'].values.reshape(-1, 1), test_size=0.2, random_state=42)
+        model.fit(train_data)
+        regime = model.predict(df[['Returns']])[-1]
+
+        # Use RandomForest and GradientBoosting classifiers
+        features = df[['SMA', 'RSI', 'ATR', 'Smoothed_Close']].fillna(0).values
+        random_forest_model.fit(features[:-1], df['Returns'].shift(-1).fillna(0)[:-1] > 0)
+        gradient_boosting_model.fit(features[:-1], df['Returns'].shift(-1).fillna(0)[:-1] > 0)
+
+        rf_prediction = random_forest_model.predict([features[-1]])[0]
+        gb_prediction = gradient_boosting_model.predict([features[-1]])[0]
+
+        return "Trending" if regime == 1 and rf_prediction == 1 and gb_prediction == 1 else "Ranging"
+    except Exception as e:
+        logger.error(f"Error detecting market regime: {e}")
+        return "Unknown"
+
+class TradeManager(Thread):
+    def __init__(self, symbol, action, entry_price, bankroll, regime):
+        super().__init__()
+        self.symbol = symbol
+        self.action = action
+        self.entry_price = entry_price
+        self.bankroll = bankroll
+        self.regime = regime
+        self.stop_event = Event()
+        self.trade_data = {}
+
+    def run(self):
+        """Attempts to execute trade and monitor it."""
+        global trade_attempts
+        try:
+            atr = talib.ATR(portfolio[self.symbol]['df']['high'], 
+                            portfolio[self.symbol]['df']['low'], 
+                            portfolio[self.symbol]['df']['close'], 
+                            timeperiod=14).iloc[-1]
+            trade_amount = adaptive_position_size(self.bankroll, atr)
+            stop_loss = self.entry_price - atr
+            take_profit = self.entry_price + (2 * atr if self.regime == "Trending" else 1.5 * atr)
+
+            order_data = {
+                "symbol": self.symbol,
+                "qty": int(trade_amount),
+                "side": self.action,
+                "type": "market",
+                "time_in_force": "day",
+                "stop_loss": stop_loss,
+                "take_profit": take_profit
+            }
+
+            response = requests.post(f"{ALPACA_BASE_URL}/v2/orders", headers=ALPACA_HEADERS, json=order_data)
+            response.raise_for_status()
+            trade_info = response.json()
+            self.trade_data = {
+                "symbol": self.symbol,
+                "trade_amount": trade_amount,
+                "entry_price": self.entry_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "realized_pnl": trade_info.get("filled_avg_price", 0) - self.entry_price
+            }
+            save_trade_history(self.trade_data)
+            save_pnl(self.trade_data)
+            send_chatgpt_message(f"Trade executed with P&L: {self.trade_data}")
+
+        except requests.RequestException as e:
+            logger.error(f"Error executing trade: {e}")
+            if trade_attempts < 3:  # Retry mechanism for network-related issues
+                logger.info("Retrying trade due to network issue...")
+                time.sleep(5)
+                self.run()
+
+    def stop(self):
+        self.stop_event.set()
 
 def main_trading_loop():
     """Main loop for monitoring and executing trades."""
@@ -159,31 +298,31 @@ def main_trading_loop():
         logger.error("Account access failed or is restricted. Exiting.")
         return
 
+    bankroll = float(account_data.get("equity", 0))
     while True:
+        start_time = time.time()
+        
         if not get_market_status():
-            logger.info("Market is closed. Waiting for market to open...")
-            time.sleep(RETRY_DELAY)
+            time.sleep(INITIAL_RETRY_DELAY)
             continue
 
-        logger.info("Market is open. Fetching historical data.")
-        df = fetch_historical_data(SYMBOL)
-        if df is not None:
-            sma = talib.SMA(df['close'], SMA_PERIOD)
-            rsi = talib.RSI(df['close'], RSI_PERIOD)
-            latest_sma = sma.iloc[-1]
-            latest_rsi = rsi.iloc[-1]
-            logger.info(f"Latest SMA: {latest_sma}, Latest RSI: {latest_rsi}")
-
-            # Standard trade conditions
-            if latest_rsi < 30 and latest_sma < df['close'].iloc[-1]:       
-                execute_trade("buy", SYMBOL)
-            else:
-                # Execute a small high-volatility trade if conditions are not met
-                execute_high_vol_trade(SYMBOL, float(account_data.get("equity", 0)))
-        else:
-            logger.warning("No historical data available.")
+        for symbol in SYMBOLS:
+            if symbol not in portfolio or not portfolio[symbol]['trade_thread'].is_alive():
+                df = fetch_historical_data(symbol)
+                if df is not None:
+                    df = calculate_indicators(df)
+                    regime = detect_market_regime(df)
+                    latest_close = df['close'].iloc[-1]
+                    new_trade = TradeManager(symbol, "buy", latest_close, bankroll, regime)
+                    portfolio[symbol] = {
+                        "df": df,
+                        "trade_thread": new_trade
+                    }
+                    new_trade.start()
         
-        time.sleep(RETRY_DELAY)
+        execution_time = time.time() - start_time
+        logger.info(f"Cycle completed in {execution_time:.2f} seconds.")
+        time.sleep(INITIAL_RETRY_DELAY)
 
 if __name__ == "__main__":
     main_trading_loop()
