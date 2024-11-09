@@ -5,8 +5,10 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import openai
+import json
 from twilio.rest import Client
 import logging
+from ratelimit import limits, sleep_and_retry
 
 # Set up logging for better debugging and tracking
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,20 +20,21 @@ SMA_PERIOD = 5
 RSI_PERIOD = 14
 TRADE_HISTORY_FILE = "OptionsTradeHistory.json"
 RETRY_DELAY = 60  # Delay in seconds for retrying API calls
+MAX_RETRIES = 3
 MAX_ORDER_RETRIES = 5
 HIGH_VOL_PERCENT = 0.02  # 2% of bankroll for high-volatility trades
 HIGH_VOL_STOP_LOSS = 0.03  # 3% stop-loss for high-volatility trades
 HIGH_VOL_PROFIT_TARGET = 0.1  # 10% profit target for high-volatility trades
 
 # API keys and credentials
-ALPACA_API_KEY = ''
-ALPACA_SECRET_KEY = ''
-POLYGON_API_KEY = ''
-CHATGPT_API_KEY = 'sk-pr'
-TWILIO_ACCOUNT_SID = ''
-TWILIO_AUTH_TOKEN = ''
-TWILIO_PHONE_NUMBER = '+'
-USER_PHONE_NUMBER = '+'
+ALPACA_API_KEY = 'your_alpaca_api_key'
+ALPACA_SECRET_KEY = 'your_alpaca_secret_key'
+POLYGON_API_KEY = 'your_polygon_api_key'
+CHATGPT_API_KEY = 'your_chatgpt_api_key'
+TWILIO_ACCOUNT_SID = 'your_twilio_sid'
+TWILIO_AUTH_TOKEN = 'your_twilio_auth_token'
+TWILIO_PHONE_NUMBER = 'your_twilio_phone_number'
+USER_PHONE_NUMBER = 'your_phone_number'
 
 # Configure API base URLs and headers
 ALPACA_BASE_URL = 'https://api.alpaca.markets'
@@ -137,7 +140,9 @@ def execute_high_vol_trade(symbol: str, bankroll: float) -> None:
             "qty": int(trade_amount),
             "side": "buy",
             "type": "market",
-            "time_in_force": "day"
+            "time_in_force": "day",
+            "stop_loss": HIGH_VOL_STOP_LOSS,
+            "take_profit": HIGH_VOL_PROFIT_TARGET
         }
         logger.info(f"Placing high-volatility trade: {order_data}")
         response = requests.post(f"{ALPACA_BASE_URL}/v2/orders", headers=ALPACA_HEADERS, json=order_data)
@@ -171,9 +176,7 @@ def main_trading_loop():
 
             # Standard trade conditions
             if latest_rsi < 30 and latest_sma < df['close'].iloc[-1]:       
-                # Your existing trade execution logic here
-                # e.g., execute_trade("buy", SYMBOL)
-                pass  # Replace with actual trading logic
+                execute_trade("buy", SYMBOL)
             else:
                 # Execute a small high-volatility trade if conditions are not met
                 execute_high_vol_trade(SYMBOL, float(account_data.get("equity", 0)))
