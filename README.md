@@ -14,7 +14,7 @@ Next, download and install Visual Studio Code (VS Code), a free text editor for 
 
 Once VS Code is installed, install the Python extension so VS Code can recognize and work with Python code. Open Visual Studio Code, click the Extensions icon on the left sidebar (which looks like four squares), search for “Python,” select the Python extension by Microsoft, and click Install.
 
-Step 2: Set Up Your Python Environment in Anaconda
+Step 2: Set Up Your Python Environment in Anaconda.
 
 Anaconda’s environments keep all required libraries organized and isolated. Open Anaconda Prompt on Windows or Terminal on macOS/Linux, and type conda create -n trading_bot python=3.9 to create a new environment with Python 3.9 installed. This creates an environment called trading_bot.
 
