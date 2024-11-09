@@ -9,7 +9,7 @@ Step 1: Download and Install Required Software
 Anaconda is your main workspace for managing Python and all necessary packages for the bot. It includes everything you need to install libraries and work in a structured environment.
 
 	1.	Download Anaconda:
-	•	Visit the Anaconda Download Page.
+	•	Visit the Anaconda Download Page: www.anaconda.com/products/distribution
 	•	Choose the installer that matches your operating system (Windows, macOS, or Linux) and download it.
 	2.	Install Anaconda:
 	•	Windows:
@@ -36,8 +36,8 @@ Replace <filename> with the exact name of the file (e.g., Anaconda3-2023-XX-Linu
 Visual Studio Code (VS Code) is a powerful, free text editor for writing and running Python code. It’s user-friendly and widely used in the programming community.
 
 	1.	Download Visual Studio Code:
-	•	Go to the Visual Studio Code Download Page.
-	•	Select the installer that matches your operating system and click Download.
+	•	Go to the Visual Studio Code Download Page: code.visualstudio.com/download
+	•	Select the installer that matches your operating system and click “Download.”
 	2.	Install Visual Studio Code:
 	•	Windows:
 	•	Open the downloaded installer file and follow the setup instructions.
@@ -98,27 +98,27 @@ API keys are secure codes that allow your bot to access different services. Here
 
 3.1 Alpaca API (Brokerage and Real-Time Market Data)
 
-	1.	Sign Up: Go to Alpaca and create an account.
+	1.	Sign Up: Go to Alpaca and create an account: alpaca.markets
 	2.	Subscribe to Algo Trader Plus ($100/month):
-	•	This subscription provides real-time data, essential for accurate trading decisions.
+	•	This subscription provides real-time data, essential for accurate and timely trading decisions.
 	3.	Retrieve API Keys:
 	•	In your Alpaca dashboard, navigate to API Settings and copy your API Key and Secret Key.
 
 3.2 Polygon API (Historical Data)
 
-	1.	Sign Up: Go to Polygon.io and create an account.
+	1.	Sign Up: Go to Polygon.io and create an account: polygon.io
 	2.	Get Your API Key:
 	•	Copy your API Key from the dashboard. This key allows the bot to retrieve historical data for calculating trading indicators.
 
 3.3 OpenAI API (ChatGPT Analysis)
 
-	1.	Sign Up: Go to OpenAI and create an account.
+	1.	Sign Up: Go to OpenAI and create an account: platform.openai.com
 	2.	Get Your API Key:
 	•	In your OpenAI dashboard, go to the API settings and copy your API Key. This key allows the bot to connect with ChatGPT.
 
 3.4 Twilio API (SMS Notifications)
 
-	1.	Sign Up: Go to Twilio and create an account.
+	1.	Sign Up: Go to Twilio and create an account: twilio.com
 	2.	Retrieve API Credentials:
 	•	Copy your Account SID and Auth Token from the Twilio dashboard. These credentials allow the bot to send you SMS alerts about trading activities.
 
