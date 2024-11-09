@@ -34,14 +34,14 @@ COOLDOWN_PERIOD = 300
 SENTIMENT_THRESHOLD = 0.1
 
 # API keys and credentials
-ALPACA_API_KEY = 'xxxxxxxx'
-ALPACA_SECRET_KEY = 'xxxxxxxxxx'
-POLYGON_API_KEY = 'xxxxxxxxxxxx'
-CHATGPT_API_KEY = 'xsxxxxxxxxxxx'
-TWILIO_ACCOUNT_SID = 'xxxxxxxxxx'
-TWILIO_AUTH_TOKEN = 'xxxxxxxxxxx'
-TWILIO_PHONE_NUMBER = 'xxxxxxxxxxx'
-USER_PHONE_NUMBER = 'xxxxxxx'
+ALPACA_API_KEY = ''
+ALPACA_SECRET_KEY = ''
+POLYGON_API_KEY = ''
+CHATGPT_API_KEY = ''
+TWILIO_ACCOUNT_SID = ''
+TWILIO_AUTH_TOKEN = ''
+TWILIO_PHONE_NUMBER = '+'
+USER_PHONE_NUMBER = ''
 
 # Configure API base URLs and headers
 ALPACA_BASE_URL = 'https://api.alpaca.markets'
